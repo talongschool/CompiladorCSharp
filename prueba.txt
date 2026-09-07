@@ -1,6 +1,6 @@
 ﻿/*
-Crea un programa que calcule el total a pagar por una compra multiplicando las unidades por el 
-precio unitario y aplique un 20% de descuento si el cliente compra 10 o más unidades siendo 
+Se necesita crear un programa que calcule el total a pagar por una compra multiplicando las unidades por el 
+precio unitario y aplicar un 20% de descuento si el cliente compra 10 o más unidades siendo 
 miembro VIP, un 10% de descuento si compra 5 o más unidades en cualquier otro caso, o sin 
 descuento si lleva menos de 5 unidades, probando la función en el main con 12 unidades a un 
 precio de 50.0 para un cliente VIP.

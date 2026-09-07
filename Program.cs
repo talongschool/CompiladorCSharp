@@ -72,7 +72,7 @@ public record Token(TipoToken Tipo, string Valor)
 
     public override string ToString()
     {
-        return $"Tipo = {Tipo,-14}, Valor = \"{Valor}\" }} \t-> {GetDescription()}";
+        return $"Tipo = {Tipo,-14} || Valor = \"{Valor}\" || {GetDescription()}";
     }
 }
 
