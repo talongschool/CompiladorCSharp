@@ -13,10 +13,11 @@ public enum TipoToken
     Comentario,
     Operador,
     Delimitador,
+    EOF,
     Desconocido
 }
 
-public record Token(TipoToken Tipo, string Valor)
+public record Token(TipoToken Tipo, string Valor, int Linea, int Columna)
 {
     public string GetDescription()
     {
@@ -66,13 +67,14 @@ public record Token(TipoToken Tipo, string Valor)
             TipoToken.Desconocido => "Símbolo no reconocido",
             TipoToken.String => "Cadena de texto.",
             TipoToken.Comentario => "Comentario en el codigo",
+            TipoToken.EOF => "Final del archivo.",
             _ => string.Empty
         };
     }
 
     public override string ToString()
     {
-        return $"Tipo = {Tipo,-14} || Valor = \"{Valor}\" || {GetDescription()}";
+        return $"[L:{Linea:D3} C:{Columna:D3}] Tipo = {Tipo,-14} || Valor = \"{Valor}\"";
     }
 }
 
@@ -80,11 +82,13 @@ public class Tokenizador
 {
     private readonly string _input;
     private int _posicion;
+    private int _linea = 1;
+    private int _columna = 1;
 
     private static readonly HashSet<string> Keywords = new(StringComparer.Ordinal)
     {
-        "main", "if", "else", "while", "for", "return", 
-        "int", "float", "string", "bool", "void", 
+        "main", "if", "else", "while", "for", "return",
+        "int", "float", "string", "bool", "void",
         "true", "false"
     };
 
@@ -96,57 +100,69 @@ public class Tokenizador
 
     private char CurrentChar => _posicion < _input.Length ? _input[_posicion] : '\0';
     private char NextChar => (_posicion + 1) < _input.Length ? _input[_posicion + 1] : '\0';
-    private void AvanzarPos() => _posicion++;
 
-    public List<Token> Tokenizar()
+    private void AvanzarPos()
     {
-        List<Token> tokens = new List<Token>();
+        if (_posicion >= _input.Length) return;
+        if (CurrentChar == '\n')
+        {
+            _linea++;
+            _columna = 1;
+        }
+        else
+        {
+            _columna++;
+        }
 
+        _posicion++;
+    }
+
+    public IEnumerable<Token> Tokenizar()
+    {
         while (_posicion < _input.Length)
         {
             char c = CurrentChar;
-
+            int inicioLinea = _linea;
+            int inicioColumna = _columna;
             if (char.IsWhiteSpace(c))
             {
-                tokens.Add(new Token(TipoToken.Blanco, c.ToString()));
                 AvanzarPos();
             }
             else if (char.IsLetter(c))
             {
-                tokens.Add(LeerIdentificadorOrKeyword());
+                yield return LeerIdentificadorOrKeyword(inicioLinea, inicioColumna);
             }
             else if (c == '/' && (NextChar == '/' || NextChar == '*'))
             {
-                tokens.Add(LeerComentario());
+                yield return LeerComentario(inicioLinea, inicioColumna);
             }
             else if (c == '"' || c == '\'')
             {
-                tokens.Add(LeerCadena());
+                yield return LeerCadena(inicioLinea, inicioColumna);
             }
             else if (char.IsDigit(c))
             {
-                tokens.Add(LeerNumero());
+                yield return LeerNumero(inicioLinea, inicioColumna);
             }
             else if ("+-*/=<>!&|^%".Contains(c))
             {
-                tokens.Add(LeerOperador());
+                yield return LeerOperador(inicioLinea, inicioColumna);
             }
             else if ("(){}[].,;:".Contains(c))
             {
-                tokens.Add(new Token(TipoToken.Delimitador, c.ToString()));
+                yield return new Token(TipoToken.Delimitador, c.ToString(), inicioLinea, inicioColumna);
                 AvanzarPos();
             }
             else
             {
-                tokens.Add(new Token(TipoToken.Desconocido, c.ToString()));
-                AvanzarPos();
+                throw new Exception($"Error, token desconocido en linea {inicioLinea} y columna {inicioColumna}");
             }
         }
 
-        return tokens;
+        yield return new Token(TipoToken.EOF, "", _linea, _columna);
     }
 
-    private Token LeerIdentificadorOrKeyword()
+    private Token LeerIdentificadorOrKeyword(int linea, int columna)
     {
         StringBuilder sb = new StringBuilder();
         while (_posicion < _input.Length && char.IsLetterOrDigit(CurrentChar))
@@ -157,15 +173,15 @@ public class Tokenizador
 
         string text = sb.ToString();
 
-        if (Keywords.Contains(text))
-        {
-            return new Token(TipoToken.Keyword, text);
-        }
-
-        return new Token(TipoToken.Identificador, text);
+        return new Token(
+            Keywords.Contains(text) ? TipoToken.Keyword : TipoToken.Identificador,
+            text,
+            linea,
+            columna
+        );
     }
 
-    private Token LeerNumero()
+    private Token LeerNumero(int linea, int columna)
     {
         StringBuilder sb = new StringBuilder();
         bool punto = false;
@@ -191,10 +207,10 @@ public class Tokenizador
             }
         }
 
-        return new Token(TipoToken.Numero, sb.ToString());
+        return new Token(TipoToken.Numero, sb.ToString(), linea, columna);
     }
 
-    private Token LeerOperador()
+    private Token LeerOperador(int linea, int columna)
     {
         char c = CurrentChar;
         char next = NextChar;
@@ -204,51 +220,51 @@ public class Tokenizador
 
         if (Array.Exists(doubleOperadors, op => op == combined))
         {
-            AvanzarPos(); 
-            AvanzarPos(); 
-            return new Token(TipoToken.Operador, combined);
+            AvanzarPos();
+            AvanzarPos();
+            return new Token(TipoToken.Operador, combined, linea, columna);
         }
 
-        AvanzarPos(); 
-        return new Token(TipoToken.Operador, c.ToString());
+        AvanzarPos();
+        return new Token(TipoToken.Operador, c.ToString(), linea, columna);
     }
-    
-    private Token LeerCadena()
+
+    private Token LeerCadena(int linea, int columna)
     {
-        char delimitador = CurrentChar; 
+        char delimitador = CurrentChar;
         StringBuilder sb = new StringBuilder();
-        
+
         sb.Append(delimitador);
         AvanzarPos();
 
         while (_posicion < _input.Length)
         {
             char c = CurrentChar;
-            
+
             if (c == '\\' && NextChar != '\0')
             {
-                sb.Append(c);        
+                sb.Append(c);
                 AvanzarPos();
-                sb.Append(CurrentChar); 
+                sb.Append(CurrentChar);
                 AvanzarPos();
                 continue;
             }
-            
+
             if (c == delimitador)
             {
                 sb.Append(c);
                 AvanzarPos();
-                return new Token(TipoToken.String, sb.ToString());
+                return new Token(TipoToken.String, sb.ToString(), linea, columna);
             }
 
             sb.Append(c);
             AvanzarPos();
         }
-        
-        return new Token(TipoToken.Desconocido, sb.ToString());
+
+        return new Token(TipoToken.Desconocido, sb.ToString(), linea, columna);
     }
-    
-    private Token LeerComentario()
+
+    private Token LeerComentario(int linea, int columna)
     {
         StringBuilder sb = new StringBuilder();
 
@@ -260,7 +276,8 @@ public class Tokenizador
                 sb.Append(CurrentChar);
                 AvanzarPos();
             }
-            return new Token(TipoToken.Comentario, sb.ToString());
+
+            return new Token(TipoToken.Comentario, sb.ToString(), linea, columna);
         }
 
         // Multilinea
@@ -277,17 +294,17 @@ public class Tokenizador
                     sb.Append("*/");
                     AvanzarPos(); // Consume *
                     AvanzarPos(); // Consume /
-                    return new Token(TipoToken.Comentario, sb.ToString());
+                    return new Token(TipoToken.Comentario, sb.ToString(), linea, columna);
                 }
 
                 sb.Append(CurrentChar);
                 AvanzarPos();
             }
-            
-            return new Token(TipoToken.Desconocido, sb.ToString());
+
+            return new Token(TipoToken.Desconocido, sb.ToString(), linea, columna);
         }
 
-        return new Token(TipoToken.Desconocido, string.Empty);
+        return new Token(TipoToken.Blanco, " ", linea, columna);
     }
 }
 
@@ -308,12 +325,11 @@ class Program
         {
             string sourceCode = File.ReadAllText(path);
 
-            Console.WriteLine("\t\tokenizador iniciado\n");
+            Console.WriteLine("\tTokenizador iniciado\n");
 
             Tokenizador tokenizador = new Tokenizador(sourceCode);
-            List<Token> tokens = tokenizador.Tokenizar();
-
-            foreach (var token in tokens)
+            
+            foreach (var token in tokenizador.Tokenizar())
             {
                 if (token.Tipo != TipoToken.Blanco)
                 {
