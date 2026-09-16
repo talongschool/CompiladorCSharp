@@ -10,9 +10,11 @@ public enum TipoToken
     Identificador,
     Numero,
     String,
+    Char,
     Comentario,
     Operador,
     Delimitador,
+    Error,
     EOF,
     Desconocido
 }
@@ -66,6 +68,8 @@ public record Token(TipoToken Tipo, string Valor, int Linea, int Columna)
                 : "Valor numérico entero (int)",
             TipoToken.Desconocido => "Símbolo no reconocido",
             TipoToken.String => "Cadena de texto.",
+            TipoToken.Char => "Caracter individual",
+            TipoToken.Error => "Error léxico (Símbolo desconocido o no cerrado)",
             TipoToken.Comentario => "Comentario en el codigo",
             TipoToken.EOF => "Final del archivo.",
             _ => string.Empty
@@ -128,7 +132,7 @@ public class Tokenizador
             {
                 AvanzarPos();
             }
-            else if (char.IsLetter(c))
+            else if (char.IsLetter(c) || c == '_')
             {
                 yield return LeerIdentificadorOrKeyword(inicioLinea, inicioColumna);
             }
@@ -153,19 +157,18 @@ public class Tokenizador
                 yield return new Token(TipoToken.Delimitador, c.ToString(), inicioLinea, inicioColumna);
                 AvanzarPos();
             }
-            else
-            {
-                throw new Exception($"Error, token desconocido en linea {inicioLinea} y columna {inicioColumna}");
+            else {
+                yield return new Token(TipoToken.Error, c.ToString(), inicioLinea, inicioColumna);
+                AvanzarPos();
             }
         }
-
         yield return new Token(TipoToken.EOF, "", _linea, _columna);
     }
 
     private Token LeerIdentificadorOrKeyword(int linea, int columna)
     {
         StringBuilder sb = new StringBuilder();
-        while (_posicion < _input.Length && char.IsLetterOrDigit(CurrentChar))
+        while (_posicion < _input.Length && (char.IsLetterOrDigit(CurrentChar) || CurrentChar == '_'))
         {
             sb.Append(CurrentChar);
             AvanzarPos();
@@ -185,6 +188,7 @@ public class Tokenizador
     {
         StringBuilder sb = new StringBuilder();
         bool punto = false;
+        bool tieneError = false;
 
         while (_posicion < _input.Length)
         {
@@ -195,16 +199,40 @@ public class Tokenizador
                 sb.Append(c);
                 AvanzarPos();
             }
-            else if (c == '.' && !punto && char.IsDigit(NextChar))
+            else if (c == '.')
             {
-                punto = true;
-                sb.Append(c);
-                AvanzarPos();
+                if (!punto && char.IsDigit(NextChar))
+                {
+                    punto = true;
+                    sb.Append(c);
+                    AvanzarPos();
+                }
+                else
+                {
+                    tieneError = true;
+                    sb.Append(c);
+                    AvanzarPos();
+                }
+            }
+            else if (char.IsLetter(c) || c == '_')
+            {
+                tieneError = true;
+                while (_posicion < _input.Length && (char.IsLetterOrDigit(CurrentChar) || CurrentChar == '_' || CurrentChar == '.'))
+                {
+                    sb.Append(CurrentChar);
+                    AvanzarPos();
+                }
+                return new Token(TipoToken.Error, sb.ToString() + " (Error: Identificador inválido)", linea, columna);
             }
             else
             {
                 break;
             }
+        }
+
+        if (tieneError)
+        {
+            return new Token(TipoToken.Error, sb.ToString() + " (Error: Estructura numérica inválida, múltiples puntos)", linea, columna);
         }
 
         return new Token(TipoToken.Numero, sb.ToString(), linea, columna);
@@ -254,14 +282,15 @@ public class Tokenizador
             {
                 sb.Append(c);
                 AvanzarPos();
-                return new Token(TipoToken.String, sb.ToString(), linea, columna);
+                
+                TipoToken tipo = delimitador == '\'' ? TipoToken.Char : TipoToken.String;
+                return new Token(tipo, sb.ToString(), linea, columna);
             }
 
             sb.Append(c);
             AvanzarPos();
         }
-
-        return new Token(TipoToken.Desconocido, sb.ToString(), linea, columna);
+        return new Token(TipoToken.Error, sb.ToString(), linea, columna);
     }
 
     private Token LeerComentario(int linea, int columna)
@@ -301,7 +330,7 @@ public class Tokenizador
                 AvanzarPos();
             }
 
-            return new Token(TipoToken.Desconocido, sb.ToString(), linea, columna);
+            return new Token(TipoToken.Error, sb.ToString() + " (Error: Faltó cerrar con */)", linea, columna);
         }
 
         return new Token(TipoToken.Blanco, " ", linea, columna);
@@ -336,6 +365,8 @@ class Program
                     Console.WriteLine(token);
                 }
             }
+            Console.WriteLine("Presiona cualquier tecla para salir...");
+            Console.ReadKey();
         }
         catch (Exception ex)
         {
