@@ -337,433 +337,634 @@ public class Tokenizador
     }
 }
 
-// ==========================================
-// ANALIZADOR SINTÁCTICO (PARSER) C++
-// ==========================================
+// El AST: Árbol de Sintaxis Abstracta.
+
+public abstract record NodoAST(int Linea, int Columna);
+
+public record Programa(List<NodoAST> Declaraciones) : NodoAST(0, 0);
+
+public record Funcion(
+    string TipoRetorno,
+    string Nombre,
+    List<Parametro> Parametros,
+    Bloque Cuerpo,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record Parametro(
+    string Tipo,
+    string Nombre,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record Bloque(
+    List<NodoAST> Instrucciones,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record DeclaracionVariable(
+    string Tipo,
+    string Nombre,
+    NodoAST? ValorInicial,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record Asignacion(
+    string Nombre,
+    string Operador,
+    NodoAST Valor,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record Condicional(
+    NodoAST Condicion,
+    Bloque Entonces,
+    NodoAST? Sino,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record BucleWhile(
+    NodoAST Condicion,
+    Bloque Cuerpo,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record BucleFor(
+    NodoAST? Inicializacion,
+    NodoAST? Condicion,
+    NodoAST? Incremento,
+    Bloque Cuerpo,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record Retorno(
+    NodoAST? Valor,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record LlamadaFuncion(
+    string Nombre,
+    List<NodoAST> Argumentos,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record Literal(
+    object Valor,
+    string TipoLiteral,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record Identificador(
+    string Nombre,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record ExpresionBinaria(
+    NodoAST Izquierda,
+    string Operador,
+    NodoAST Derecha,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+public record ExpresionUnaria(
+    string Operador,
+    NodoAST Operando,
+    bool EsPrefijo,
+    int Linea,
+    int Columna) : NodoAST(Linea, Columna);
+
+// Excepción para errores sintácticos.
+
+public class ParserException : Exception
+{
+    public int Linea { get; }
+    public int Columna { get; }
+
+    public ParserException(string mensaje, int linea, int columna)
+        : base($"Error sintáctico [L:{linea} C:{columna}]: {mensaje}")
+    {
+        Linea = linea;
+        Columna = columna;
+    }
+}
+
+// Parser por descenso recursivo completo.
+
 public class Parser
 {
     private readonly List<Token> _tokens;
-    private int _pos = 0;
-    private readonly List<string> _errores = new List<string>();
+    private int _posicion;
 
     public Parser(IEnumerable<Token> tokens)
     {
-        _tokens = tokens.Where(t => t.Tipo != TipoToken.Blanco && t.Tipo != TipoToken.Comentario).ToList();
+        _tokens = tokens.Where(t => t.Tipo != TipoToken.Comentario).ToList();
+        _posicion = 0;
     }
 
-    private Token Current => _pos < _tokens.Count ? _tokens[_pos] : _tokens[_tokens.Count - 1];
+    private Token Actual => _posicion < _tokens.Count ? _tokens[_posicion] : _tokens[_tokens.Count - 1];
+    private Token Anterior => _posicion > 0 ? _tokens[_posicion - 1] : _tokens[0];
+    private bool EsFin => Actual.Tipo == TipoToken.EOF;
 
-    private void Avanzar()
+    private bool EsIdentificador()
     {
-        if (_pos < _tokens.Count - 1)
+        return Actual.Tipo == TipoToken.Identificador || (Actual.Tipo == TipoToken.Keyword && Actual.Valor == "main");
+    }
+
+    public Programa Parse()
+    {
+        var declaraciones = new List<NodoAST>();
+        while (!EsFin)
         {
-            _pos++;
+            declaraciones.Add(ParseDeclaracionGlobal());
+        }
+        return new Programa(declaraciones);
+    }
+
+    private NodoAST ParseDeclaracionGlobal()
+    {
+        int linea = Actual.Linea;
+        int columna = Actual.Columna;
+
+        string tipo = ParseTipo();
+        if (!EsIdentificador())
+        {
+            Error($"Se esperaba un identificador, se encontró '{Actual.Valor}'");
+        }
+        string nombre = Avanzar().Valor;
+
+        if (Verificar(TipoToken.Delimitador, "("))
+        {
+            Avanzar(); // consume '('
+            List<Parametro> parametros = new List<Parametro>();
+            if (!Verificar(TipoToken.Delimitador, ")"))
+            {
+                parametros = ParseParametros();
+            }
+            ConsumirValor(")");
+            Bloque cuerpo = ParseBloque();
+            return new Funcion(tipo, nombre, parametros, cuerpo, linea, columna);
+        }
+        else
+        {
+            NodoAST? valorInicial = null;
+            if (Coincidir("="))
+            {
+                valorInicial = ParseExpresion();
+            }
+            ConsumirValor(";");
+            return new DeclaracionVariable(tipo, nombre, valorInicial, linea, columna);
         }
     }
 
-    private bool EsTipoDato(string valor)
+    private Funcion ParseFuncion()
     {
-        return valor == "int" || valor == "float" || valor == "string" || valor == "char" || valor == "bool" || valor == "void";
-    }
-
-    private bool EsIdentificadorValidoToken(Token token)
-    {
-        // Acepta tanto un token de tipo Identificador como Keyword si el valor es 'main' u otra función reservada válida como identificador
-        return token.Tipo == TipoToken.Identificador || 
-               (token.Tipo == TipoToken.Keyword && token.Valor == "main");
-    }
-
-    private Token ConsumirIdentificador(string mensajeError = null)
-    {
-        if (EsIdentificadorValidoToken(Current))
+        int linea = Actual.Linea;
+        int columna = Actual.Columna;
+        string tipo = ParseTipo();
+        if (!EsIdentificador()) Error($"Se esperaba un identificador para la función, se encontró '{Actual.Valor}'");
+        string nombre = Avanzar().Valor;
+        ConsumirValor("(");
+        List<Parametro> parametros = new List<Parametro>();
+        if (!Verificar(TipoToken.Delimitador, ")"))
         {
-            Token t = Current;
-            Avanzar();
-            return t;
+            parametros = ParseParametros();
+        }
+        ConsumirValor(")");
+        Bloque cuerpo = ParseBloque();
+        return new Funcion(tipo, nombre, parametros, cuerpo, linea, columna);
+    }
+
+    private List<Parametro> ParseParametros()
+    {
+        var parametros = new List<Parametro>();
+        do
+        {
+            parametros.Add(ParseParametro());
+        } while (Coincidir(","));
+        return parametros;
+    }
+
+    private Parametro ParseParametro()
+    {
+        int linea = Actual.Linea;
+        int columna = Actual.Columna;
+        string tipo = ParseTipo();
+        if (!EsIdentificador()) Error($"Se esperaba un identificador para el parámetro, se encontró '{Actual.Valor}'");
+        string nombre = Avanzar().Valor;
+        return new Parametro(tipo, nombre, linea, columna);
+    }
+
+    private string ParseTipo()
+    {
+        if (Coincidir("int", "float", "string", "bool", "void", "char"))
+        {
+            return Anterior.Valor;
+        }
+        Error($"Se esperaba un tipo de dato válido, se encontró '{Actual.Valor}'");
+        return string.Empty;
+    }
+
+    private Bloque ParseBloque()
+    {
+        int linea = Actual.Linea;
+        int columna = Actual.Columna;
+        ConsumirValor("{");
+        var instrucciones = new List<NodoAST>();
+        while (!Verificar(TipoToken.Delimitador, "}") && !EsFin)
+        {
+            instrucciones.Add(ParseInstruccion());
+        }
+        ConsumirValor("}");
+        return new Bloque(instrucciones, linea, columna);
+    }
+
+    private NodoAST ParseInstruccion()
+    {
+        if (Verificar(TipoToken.Delimitador, "{"))
+        {
+            return ParseBloque();
+        }
+        if (Coincidir("if"))
+        {
+            return ParseCondicional();
+        }
+        if (Coincidir("while"))
+        {
+            return ParseBucleWhile();
+        }
+        if (Coincidir("for"))
+        {
+            return ParseBucleFor();
+        }
+        if (Coincidir("return"))
+        {
+            return ParseRetorno();
+        }
+        if (Verificar(TipoToken.Keyword) && (Actual.Valor == "int" || Actual.Valor == "float" || Actual.Valor == "string" || Actual.Valor == "bool" || Actual.Valor == "char"))
+        {
+            return ParseDeclaracionVariable();
         }
 
-        string msg = mensajeError ?? $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba un identificador, pero se encontró '{Current.Valor}'.";
-        _errores.Add(msg);
+        // Detección de asignación (IDENTIFICADOR opAsignacion ...)
+        if (EsIdentificador() && _posicion + 1 < _tokens.Count)
+        {
+            string siguienteValor = _tokens[_posicion + 1].Valor;
+            if (siguienteValor == "=" || siguienteValor == "+=" || siguienteValor == "-=" || siguienteValor == "*=" || siguienteValor == "/=")
+            {
+                return ParseAsignacion();
+            }
+        }
+
+        NodoAST expr = ParseExpresion();
+        ConsumirValor(";");
+        return expr;
+    }
+
+    private DeclaracionVariable ParseDeclaracionVariable()
+    {
+        int linea = Actual.Linea;
+        int columna = Actual.Columna;
+        string tipo = ParseTipo();
+        if (!EsIdentificador()) Error($"Se esperaba un identificador de variable, se encontró '{Actual.Valor}'");
+        string nombre = Avanzar().Valor;
+        NodoAST? valorInicial = null;
+        if (Coincidir("="))
+        {
+            valorInicial = ParseExpresion();
+        }
+        ConsumirValor(";");
+        return new DeclaracionVariable(tipo, nombre, valorInicial, linea, columna);
+    }
+
+    private Asignacion ParseAsignacion()
+    {
+        int linea = Actual.Linea;
+        int columna = Actual.Columna;
+        if (!EsIdentificador()) Error($"Se esperaba un identificador para la asignación, se encontró '{Actual.Valor}'");
+        string nombre = Avanzar().Valor;
         
-        if (Current.Tipo != TipoToken.EOF)
+        string operador = Actual.Valor;
+        if (!Coincidir("=", "+=", "-=", "*=", "/="))
         {
-            Avanzar();
+            Error($"Se esperaba un operador de asignación, se encontró '{Actual.Valor}'");
         }
-        return Current;
+        
+        NodoAST valor = ParseExpresion();
+        ConsumirValor(";");
+        return new Asignacion(nombre, operador, valor, linea, columna);
     }
 
-    private bool Coincide(TipoToken tipo, string valor = null)
+    private Condicional ParseCondicional()
     {
-        if (Current.Tipo == tipo)
+        int linea = Anterior.Linea;
+        int columna = Anterior.Columna;
+        ConsumirValor("(");
+        NodoAST condicion = ParseExpresion();
+        ConsumirValor(")");
+        
+        Bloque entonces = ParseBloque();
+        NodoAST? sino = null;
+        if (Coincidir("else"))
         {
-            if (valor == null || Current.Valor == valor)
+            if (VerificarValor("if"))
+            {
+                Avanzar(); // consume 'if'
+                sino = ParseCondicional();
+            }
+            else
+            {
+                sino = ParseBloque();
+            }
+        }
+        return new Condicional(condicion, entonces, sino, linea, columna);
+    }
+
+    private BucleWhile ParseBucleWhile()
+    {
+        int linea = Anterior.Linea;
+        int columna = Anterior.Columna;
+        ConsumirValor("(");
+        NodoAST condicion = ParseExpresion();
+        ConsumirValor(")");
+        Bloque cuerpo = ParseBloque();
+        return new BucleWhile(condicion, cuerpo, linea, columna);
+    }
+
+    private BucleFor ParseBucleFor()
+    {
+        int linea = Anterior.Linea;
+        int columna = Anterior.Columna;
+        ConsumirValor("(");
+        NodoAST? inicializacion = ParseInicializacionFor();
+        ConsumirValor(";");
+        NodoAST? condicion = ParseCondicionFor();
+        ConsumirValor(";");
+        NodoAST? incremento = ParseIncrementoFor();
+        ConsumirValor(")");
+        Bloque cuerpo = ParseBloque();
+        return new BucleFor(inicializacion, condicion, incremento, cuerpo, linea, columna);
+    }
+
+    private NodoAST? ParseInicializacionFor()
+    {
+        if (Verificar(TipoToken.Delimitador, ";")) return null;
+
+        if (Verificar(TipoToken.Keyword) && (Actual.Valor == "int" || Actual.Valor == "float" || Actual.Valor == "string" || Actual.Valor == "bool" || Actual.Valor == "char"))
+        {
+            int linea = Actual.Linea;
+            int columna = Actual.Columna;
+            string tipo = ParseTipo();
+            if (!EsIdentificador()) Error($"Se esperaba un identificador, se encontró '{Actual.Valor}'");
+            string nombre = Avanzar().Valor;
+            NodoAST? valorInicial = null;
+            if (Coincidir("="))
+            {
+                valorInicial = ParseExpresion();
+            }
+            return new DeclaracionVariable(tipo, nombre, valorInicial, linea, columna);
+        }
+
+        return ParseExpresion();
+    }
+
+    private NodoAST? ParseCondicionFor()
+    {
+        if (Verificar(TipoToken.Delimitador, ";")) return null;
+        return ParseExpresion();
+    }
+
+    private NodoAST? ParseIncrementoFor()
+    {
+        if (Verificar(TipoToken.Delimitador, ")")) return null;
+        return ParseExpresion();
+    }
+
+    private Retorno ParseRetorno()
+    {
+        int linea = Anterior.Linea;
+        int columna = Anterior.Columna;
+        NodoAST? valor = null;
+        if (!Verificar(TipoToken.Delimitador, ";"))
+        {
+            valor = ParseExpresion();
+        }
+        ConsumirValor(";");
+        return new Retorno(valor, linea, columna);
+    }
+
+    private LlamadaFuncion ParseLlamadaFuncion()
+    {
+        int linea = Actual.Linea;
+        int columna = Actual.Columna;
+        if (!EsIdentificador()) Error($"Se esperaba un identificador de función, se encontró '{Actual.Valor}'");
+        string nombre = Avanzar().Valor;
+        ConsumirValor("(");
+        var argumentos = new List<NodoAST>();
+        if (!Verificar(TipoToken.Delimitador, ")"))
+        {
+            argumentos = ParseArgumentos();
+        }
+        ConsumirValor(")");
+        return new LlamadaFuncion(nombre, argumentos, linea, columna);
+    }
+
+    private List<NodoAST> ParseArgumentos()
+    {
+        var args = new List<NodoAST>();
+        do
+        {
+            args.Add(ParseExpresion());
+        } while (Coincidir(","));
+        return args;
+    }
+
+    // Jerarquía de expresiones por precedencia de operadores
+    private NodoAST ParseExpresion() => ParseExpresionOr();
+
+    private NodoAST ParseExpresionOr()
+    {
+        NodoAST izquierda = ParseExpresionAnd();
+        while (Coincidir("||"))
+        {
+            Token op = Anterior;
+            NodoAST derecha = ParseExpresionAnd();
+            izquierda = new ExpresionBinaria(izquierda, op.Valor, derecha, op.Linea, op.Columna);
+        }
+        return izquierda;
+    }
+
+    private NodoAST ParseExpresionAnd()
+    {
+        NodoAST izquierda = ParseExpresionIgualdad();
+        while (Coincidir("&&"))
+        {
+            Token op = Anterior;
+            NodoAST derecha = ParseExpresionIgualdad();
+            izquierda = new ExpresionBinaria(izquierda, op.Valor, derecha, op.Linea, op.Columna);
+        }
+        return izquierda;
+    }
+
+    private NodoAST ParseExpresionIgualdad()
+    {
+        NodoAST izquierda = ParseExpresionComparacion();
+        while (Coincidir("==", "!="))
+        {
+            Token op = Anterior;
+            NodoAST derecha = ParseExpresionComparacion();
+            izquierda = new ExpresionBinaria(izquierda, op.Valor, derecha, op.Linea, op.Columna);
+        }
+        return izquierda;
+    }
+
+    private NodoAST ParseExpresionComparacion()
+    {
+        NodoAST izquierda = ParseExpresionSuma();
+        while (Coincidir("<", ">", "<=", ">="))
+        {
+            Token op = Anterior;
+            NodoAST derecha = ParseExpresionSuma();
+            izquierda = new ExpresionBinaria(izquierda, op.Valor, derecha, op.Linea, op.Columna);
+        }
+        return izquierda;
+    }
+
+    private NodoAST ParseExpresionSuma()
+    {
+        NodoAST izquierda = ParseExpresionMult();
+        while (Coincidir("+", "-"))
+        {
+            Token op = Anterior;
+            NodoAST derecha = ParseExpresionMult();
+            izquierda = new ExpresionBinaria(izquierda, op.Valor, derecha, op.Linea, op.Columna);
+        }
+        return izquierda;
+    }
+
+    private NodoAST ParseExpresionMult()
+    {
+        NodoAST izquierda = ParseExpresionUnaria();
+        while (Coincidir("*", "/", "%"))
+        {
+            Token op = Anterior;
+            NodoAST derecha = ParseExpresionUnaria();
+            izquierda = new ExpresionBinaria(izquierda, op.Valor, derecha, op.Linea, op.Columna);
+        }
+        return izquierda;
+    }
+
+    private NodoAST ParseExpresionUnaria()
+    {
+        if (Coincidir("!", "-", "++", "--"))
+        {
+            Token op = Anterior;
+            NodoAST operando = ParseExpresionUnaria();
+            return new ExpresionUnaria(op.Valor, operando, true, op.Linea, op.Columna);
+        }
+        return ParseExpresionPostfija();
+    }
+
+    private NodoAST ParseExpresionPostfija()
+    {
+        NodoAST primario = ParsePrimario();
+        if (Coincidir("++", "--"))
+        {
+            Token op = Anterior;
+            return new ExpresionUnaria(op.Valor, primario, false, op.Linea, op.Columna);
+        }
+        return primario;
+    }
+
+    private NodoAST ParsePrimario()
+    {
+        int linea = Actual.Linea;
+        int columna = Actual.Columna;
+
+        if (Verificar(TipoToken.Numero))
+        {
+            Token t = Avanzar();
+            object valor = t.Valor.Contains('.') ? double.Parse(t.Valor, System.Globalization.CultureInfo.InvariantCulture) : int.Parse(t.Valor);
+            return new Literal(valor, "number", t.Linea, t.Columna);
+        }
+        if (Verificar(TipoToken.String))
+        {
+            Token t = Avanzar();
+            return new Literal(t.Valor, "string", t.Linea, t.Columna);
+        }
+        if (Verificar(TipoToken.Char))
+        {
+            Token t = Avanzar();
+            return new Literal(t.Valor, "char", t.Linea, t.Columna);
+        }
+        if (Coincidir("true", "false"))
+        {
+            Token t = Anterior;
+            bool val = bool.Parse(t.Valor);
+            return new Literal(val, "bool", t.Linea, t.Columna);
+        }
+        if (Coincidir("("))
+        {
+            NodoAST expr = ParseExpresion();
+            ConsumirValor(")");
+            return expr;
+        }
+        if (EsIdentificador())
+        {
+            if (_posicion + 1 < _tokens.Count && _tokens[_posicion + 1].Valor == "(")
+            {
+                return ParseLlamadaFuncion();
+            }
+            Token t = Avanzar();
+            return new Identificador(t.Valor, t.Linea, t.Columna);
+        }
+
+        Error($"Expresión primaria inválida o inesperada: '{Actual.Valor}'");
+        return null!;
+    }
+
+    // Utilidades provistas por la plantilla.
+    private bool Verificar(TipoToken tipo) => Actual.Tipo == tipo;
+
+    private bool Verificar(TipoToken tipo, string valor)
+        => Actual.Tipo == tipo && Actual.Valor == valor;
+
+    private bool VerificarValor(string valor) => Actual.Valor == valor;
+
+    private bool Coincidir(params string[] valores)
+    {
+        foreach (var v in valores)
+        {
+            if (VerificarValor(v))
+            {
+                Avanzar();
                 return true;
+            }
         }
         return false;
     }
 
-    private Token Consumir(TipoToken tipo, string valor = null, string mensajeError = null)
+    private Token Avanzar()
     {
-        if (Coincide(tipo, valor))
-        {
-            Token t = Current;
-            Avanzar();
-            return t;
-        }
-
-        string esperado = valor ?? tipo.ToString();
-        string msg = mensajeError ?? $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba '{esperado}', pero se encontró '{Current.Valor}'.";
-        _errores.Add(msg);
-        
-        if (Current.Tipo != TipoToken.EOF)
-        {
-            Avanzar();
-        }
-        return Current;
+        if (!EsFin) _posicion++;
+        return Anterior;
     }
 
-    public List<string> Analizar()
+    private Token ConsumirValor(string valor)
     {
-        _errores.Clear();
-        _pos = 0;
-
-        try
-        {
-            while (_pos < _tokens.Count && Current.Tipo != TipoToken.EOF)
-            {
-                ParsearPrograma();
-            }
-        }
-        catch (Exception ex)
-        {
-            _errores.Add($"[Error Crítico del Parser] {ex.Message}");
-        }
-
-        return _errores;
+        if (VerificarValor(valor)) return Avanzar();
+        throw new ParserException(
+            $"Se esperaba '{valor}', se encontró '{Actual.Valor}' ({Actual.Tipo})",
+            Actual.Linea,
+            Actual.Columna);
     }
 
-    private void ParsearPrograma()
+    private void Error(string mensaje)
     {
-        if (Current.Tipo == TipoToken.Keyword && EsTipoDato(Current.Valor))
-        {
-            string tipoDato = Current.Valor;
-            Avanzar();
-
-            Token id = ConsumirIdentificador($"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba un identificador (función o variable) después de '{tipoDato}'.");
-
-            if (Coincide(TipoToken.Delimitador, "("))
-            {
-                Avanzar();
-                ParsearParametros();
-                Consumir(TipoToken.Delimitador, ")", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ')' cerrando los parámetros de la función.");
-                ParsearBloque();
-            }
-            else if (Coincide(TipoToken.Delimitador, ";") || Coincide(TipoToken.Operador, "="))
-            {
-                if (Coincide(TipoToken.Operador, "="))
-                {
-                    Avanzar();
-                    ParsearExpresion();
-                }
-                Consumir(TipoToken.Delimitador, ";", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ';' al final de la declaración de variable.");
-            }
-            else
-            {
-                _errores.Add($"[Error Sintáctico] Línea {id.Linea}, Columna {id.Columna}: Sintaxis inválida tras el identificador '{id.Valor}'.");
-                Sincronizar();
-            }
-        }
-        else
-        {
-            _errores.Add($"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba una declaración de tipo (int, float, void, etc.), se encontró '{Current.Valor}'.");
-            Avanzar();
-        }
-    }
-
-    private void ParsearParametros()
-    {
-        if (Coincide(TipoToken.Delimitador, ")")) return;
-
-        do
-        {
-            if (Current.Tipo == TipoToken.Keyword && EsTipoDato(Current.Valor))
-            {
-                Avanzar();
-                ConsumirIdentificador($"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba el nombre del parámetro.");
-            }
-            else if (Coincide(TipoToken.Keyword, "void") && Coincide(TipoToken.Delimitador, ")"))
-            {
-                Avanzar();
-                break;
-            }
-            else
-            {
-                _errores.Add($"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Definición de parámetro inválida.");
-                break;
-            }
-
-            if (Coincide(TipoToken.Delimitador, ","))
-            {
-                Avanzar();
-            }
-            else
-            {
-                break;
-            }
-        } while (_pos < _tokens.Count && !Coincide(TipoToken.Delimitador, ")"));
-    }
-
-    private void ParsearBloque()
-    {
-        Consumir(TipoToken.Delimitador, "{", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba '{{' para abrir el bloque de código.");
-        while (_pos < _tokens.Count && !Coincide(TipoToken.Delimitador, "}") && !Coincide(TipoToken.EOF))
-        {
-            ParsearInstruccion();
-        }
-        Consumir(TipoToken.Delimitador, "}", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba '}}' para cerrar el bloque de código.");
-    }
-
-    private void ParsearInstruccion()
-    {
-        if (Coincide(TipoToken.Delimitador, ";"))
-        {
-            Avanzar();
-            return;
-        }
-
-        if (Coincide(TipoToken.Delimitador, "{"))
-        {
-            ParsearBloque();
-            return;
-        }
-
-        if (Current.Tipo == TipoToken.Keyword && EsTipoDato(Current.Valor))
-        {
-            string tipo = Current.Valor;
-            Avanzar();
-            ConsumirIdentificador($"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba un identificador tras el tipo '{tipo}'.");
-            
-            if (Coincide(TipoToken.Operador, "="))
-            {
-                Avanzar();
-                ParsearExpresion();
-            }
-            Consumir(TipoToken.Delimitador, ";", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ';' al final de la instrucción.");
-            return;
-        }
-
-        if (Coincide(TipoToken.Keyword, "if"))
-        {
-            Avanzar();
-            Consumir(TipoToken.Delimitador, "(", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba '(' después de 'if'.");
-            ParsearExpresion();
-            Consumir(TipoToken.Delimitador, ")", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ')' después de la condición del 'if'.");
-            ParsearInstruccion();
-
-            if (Coincide(TipoToken.Keyword, "else"))
-            {
-                Avanzar();
-                ParsearInstruccion();
-            }
-            return;
-        }
-
-        if (Coincide(TipoToken.Keyword, "while"))
-        {
-            Avanzar();
-            Consumir(TipoToken.Delimitador, "(", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba '(' después de 'while'.");
-            ParsearExpresion();
-            Consumir(TipoToken.Delimitador, ")", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ')' después de la condición del 'while'.");
-            ParsearInstruccion();
-            return;
-        }
-
-        if (Coincide(TipoToken.Keyword, "for"))
-        {
-            Avanzar();
-            Consumir(TipoToken.Delimitador, "(", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba '(' después de 'for'.");
-            
-            if (Current.Tipo == TipoToken.Keyword && EsTipoDato(Current.Valor))
-            {
-                Avanzar();
-                ConsumirIdentificador();
-            }
-            else if (EsIdentificadorValidoToken(Current))
-            {
-                Avanzar();
-            }
-
-            if (Coincide(TipoToken.Operador, "="))
-            {
-                Avanzar();
-                ParsearExpresion();
-            }
-            Consumir(TipoToken.Delimitador, ";", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ';' en la cabecera del 'for'.");
-
-            ParsearExpresion();
-            Consumir(TipoToken.Delimitador, ";", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ';' en la cabecera del 'for'.");
-
-            ParsearExpresion();
-            Consumir(TipoToken.Delimitador, ")", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ')' al cerrar la cabecera del 'for'.");
-
-            ParsearInstruccion();
-            return;
-        }
-
-        if (Coincide(TipoToken.Keyword, "return"))
-        {
-            Avanzar();
-            if (!Coincide(TipoToken.Delimitador, ";"))
-            {
-                ParsearExpresion();
-            }
-            Consumir(TipoToken.Delimitador, ";", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ';' al final de la sentencia 'return'.");
-            return;
-        }
-
-        ParsearExpresion();
-        Consumir(TipoToken.Delimitador, ";", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ';' al final de la instrucción.");
-    }
-
-    private void ParsearExpresion() => ParsearAsignacion();
-
-    private void ParsearAsignacion()
-    {
-        ParsearLogicaO();
-        if (Coincide(TipoToken.Operador, "=") || Coincide(TipoToken.Operador, "+=") || 
-            Coincide(TipoToken.Operador, "-=") || Coincide(TipoToken.Operador, "*=") || 
-            Coincide(TipoToken.Operador, "/="))
-        {
-            Avanzar();
-            ParsearAsignacion();
-        }
-    }
-
-    private void ParsearLogicaO()
-    {
-        ParsearLogicaAnd();
-        while (Coincide(TipoToken.Operador, "||")) { Avanzar(); ParsearLogicaAnd(); }
-    }
-
-    private void ParsearLogicaAnd()
-    {
-        ParsearIgualdad();
-        while (Coincide(TipoToken.Operador, "&&")) { Avanzar(); ParsearIgualdad(); }
-    }
-
-    private void ParsearIgualdad()
-    {
-        ParsearRelacional();
-        while (Coincide(TipoToken.Operador, "==") || Coincide(TipoToken.Operador, "!=")) { Avanzar(); ParsearRelacional(); }
-    }
-
-    private void ParsearRelacional()
-    {
-        ParsearAditiva();
-        while (Coincide(TipoToken.Operador, "<") || Coincide(TipoToken.Operador, ">") || 
-               Coincide(TipoToken.Operador, "<=") || Coincide(TipoToken.Operador, ">=")) { Avanzar(); ParsearAditiva(); }
-    }
-
-    private void ParsearAditiva()
-    {
-        ParsearMultiplicativa();
-        while (Coincide(TipoToken.Operador, "+") || Coincide(TipoToken.Operador, "-")) { Avanzar(); ParsearMultiplicativa(); }
-    }
-
-    private void ParsearMultiplicativa()
-    {
-        ParsearUnaria();
-        while (Coincide(TipoToken.Operador, "*") || Coincide(TipoToken.Operador, "/") || Coincide(TipoToken.Operador, "%")) { Avanzar(); ParsearUnaria(); }
-    }
-
-    private void ParsearUnaria()
-    {
-        if (Coincide(TipoToken.Operador, "!") || Coincide(TipoToken.Operador, "-") || 
-            Coincide(TipoToken.Operador, "++") || Coincide(TipoToken.Operador, "--"))
-        {
-            Avanzar();
-            ParsearUnaria();
-        }
-        else
-        {
-            ParsearPrimaria();
-        }
-    }
-
-    private void ParsearPrimaria()
-    {
-        if (Coincide(TipoToken.Numero) || Coincide(TipoToken.String) || Coincide(TipoToken.Char) ||
-            Coincide(TipoToken.Keyword, "true") || Coincide(TipoToken.Keyword, "false"))
-        {
-            Avanzar();
-        }
-        else if (EsIdentificadorValidoToken(Current))
-        {
-            Avanzar();
-
-            if (Coincide(TipoToken.Delimitador, "("))
-            {
-                Avanzar();
-                ParsearArgumentos();
-                Consumir(TipoToken.Delimitador, ")", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ')' cerrando argumentos.");
-            }
-            else if (Coincide(TipoToken.Delimitador, "["))
-            {
-                Avanzar();
-                ParsearExpresion();
-                Consumir(TipoToken.Delimitador, "]", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ']' cerrando índice.");
-            }
-            else if (Coincide(TipoToken.Operador, "++") || Coincide(TipoToken.Operador, "--"))
-            {
-                Avanzar();
-            }
-        }
-        else if (Coincide(TipoToken.Delimitador, "("))
-        {
-            Avanzar();
-            ParsearExpresion();
-            Consumir(TipoToken.Delimitador, ")", $"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Se esperaba ')' cerrando expresión.");
-        }
-        else
-        {
-            _errores.Add($"[Error Sintáctico] Línea {Current.Linea}, Columna {Current.Columna}: Expresión o término inválido: '{Current.Valor}'.");
-            Avanzar();
-        }
-    }
-
-    private void ParsearArgumentos()
-    {
-        if (Coincide(TipoToken.Delimitador, ")")) return;
-
-        do
-        {
-            ParsearExpresion();
-            if (Coincide(TipoToken.Delimitador, ","))
-            {
-                Avanzar();
-            }
-            else
-            {
-                break;
-            }
-        } while (_pos < _tokens.Count && !Coincide(TipoToken.Delimitador, ")"));
-    }
-
-    private void Sincronizar()
-    {
-        Avanzar();
-        while (_pos < _tokens.Count)
-        {
-            if (_tokens[_pos - 1].Tipo == TipoToken.Delimitador && _tokens[_pos - 1].Valor == ";")
-                return;
-
-            if (Current.Tipo == TipoToken.Keyword && EsTipoDato(Current.Valor))
-                return;
-
-            Avanzar();
-        }
+        throw new ParserException(mensaje, Actual.Linea, Actual.Columna);
     }
 }
+
+// El programa principal.
 
 class Program
 {
@@ -782,11 +983,11 @@ class Program
         {
             string sourceCode = File.ReadAllText(path);
 
-            Console.WriteLine("\t=== TOKENIZADOR INICIADO ===\n");
+            Console.WriteLine("\tTokenizador iniciado\n");
 
             Tokenizador tokenizador = new Tokenizador(sourceCode);
-            List<Token> tokens = tokenizador.Tokenizar().ToList();
-            
+            var tokens = tokenizador.Tokenizar().ToList();
+
             foreach (var token in tokens)
             {
                 if (token.Tipo != TipoToken.Blanco)
@@ -794,29 +995,26 @@ class Program
                     Console.WriteLine(token);
                 }
             }
-            
-            Parser parser = new Parser(tokens);
-            List<string> erroresSintacticos = parser.Analizar();
 
-            if (erroresSintacticos.Count == 0)
-            {
-                Console.WriteLine("\n¡El código fuente es sintácticamente correcto.");
-            }
-            else
-            {
-                Console.WriteLine($"\nSe encontraron {erroresSintacticos.Count} errores de sintaxis:\n");
-                foreach (var error in erroresSintacticos)
-                {
-                    Console.WriteLine($"  - {error}");
-                }
-            }
+            Console.WriteLine("\n\tParser iniciado\n");
+
+            Parser parser = new Parser(tokens);
+            Programa programa = parser.Parse();
+
+            Console.WriteLine($"¡Análisis sintáctico exitoso!");
 
             Console.WriteLine("\nPresiona cualquier tecla para salir...");
+            Console.ReadKey();
+        }
+        catch (ParserException ex)
+        {
+            Console.WriteLine($"\n[ERROR SINTÁCTICO] {ex.Message}");
             Console.ReadKey();
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Ocurrió un error inesperado: {ex.Message}");
+            Console.ReadKey();
         }
     }
 }
