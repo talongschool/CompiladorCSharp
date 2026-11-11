@@ -29,8 +29,8 @@ int main() {
     int cantidad = 12;
     float precio = 50.0;
     bool vip = true;
-    string prueba = "aura"
-    char prueba2 = 'a'
+    string prueba = "aura";
+    char prueba2 = 'a';
     
     float resultado = calcularTotalCompra(cantidad, precio, vip);
     return 0;
